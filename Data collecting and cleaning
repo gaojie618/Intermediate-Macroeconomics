@@ -1,0 +1,229 @@
+""" 
+To ensure the completeness of data collection, 
+we export all available source data from the iFinD database, 
+which is official data stored in the iFinD database to ensure authenticity.
+"""
+
+import pandas as pd
+import numpy as np
+from sklearn.linear_model import LinearRegression
+from openpyxl import load_workbook
+from openpyxl.styles import Alignment
+
+# ====================== 配置参数 ======================
+# 定义文件配置字典，包含每个文件的目标列和转换函数
+# 该字典用于统一管理不同数据文件的处理方式
+# 包括目标列名、是否需要转换以及转换函数等信息
+FILES_CONFIG = {
+    # 美国数据需要汇率转换，因为原始数据为美元单位，需转换为人民币单位
+    "美国GDP不变价支出法.xlsx": {
+        "target_col": "US_Real_GDP_Billion_Yuan",  # 目标列名
+        "conversion": lambda val, rate: val * 10 * rate  # 十亿美元转换为亿元人民币的转换函数
+    },
+    "美国个人支出消费支出.xlsx": {
+        "target_col": "US_Consumption_Expenditure_Billion_Yuan",
+        "conversion": lambda val, rate: val * 10 * rate
+    },
+    # 中国数据，部分数据需要转换，部分直接使用
+    "GDP不变价.xlsx": {"target_col": "China_Real_GDP_Billion_Yuan"},
+    "中国失业率青年人国际劳工估算.xlsx": {"target_col": "China_Youth_Unemployment_Rate"},
+    "全社会固定资产投资总额.xlsx": {"target_col": "China_Fixed_Asset_Investment_Billion_Yuan"},
+    "年末总人口数.xlsx": {
+        "target_col": "China_Population_Billion",
+        "conversion": lambda x: x / 10000  # 万人转换为亿人的转换函数
+    },
+    "GDP支出法最终消费.xlsx": {"target_col": "China_Final_Consumption_Billion_Yuan"},
+    "GDP支出法资本形成总额.xlsx": {"target_col": "China_Capital_Formation_Billion_Yuan"}
+}
+
+# ====================== 数据加载函数 ======================
+def load_data(filename, skipfooter=0):
+    """
+    通用数据加载函数，用于加载Excel文件并进行初步处理
+    参数：
+        filename: 文件名
+        skipfooter: 跳过文件末尾的行数，默认为0
+    返回：
+        加载并处理后的DataFrame，包含年份和对应值两列
+    """
+    # 使用pandas读取Excel文件，跳过前3行和指定的末尾行数
+    # 只使用第0列和第1列，命名为"Year"和"Value"
+    df = pd.read_excel(
+        filename,
+        skiprows=3,
+        skipfooter=skipfooter,
+        header=None,
+        usecols=[0, 1],
+        names=["Year", "Value"],
+        engine="openpyxl"
+    )
+    
+    # 处理日期格式，提取年份
+    # 将"Year"列转换为字符串，取前4位作为年份，拼接成"YYYY-12-31"格式
+    df["Year"] = pd.to_datetime(
+        df["Year"].astype(str).str.slice(0, 4) + "-12-31",
+        errors="coerce"  # 无法转换的值将设置为NaT
+    ).dt.year  # 提取年份部分
+    
+    # 删除年份为空的行（即无法转换的行）
+    return df.dropna(subset=["Year"]).set_index("Year")  # 以年份为索引返回
+
+# ====================== 高级数据填充方法 ======================
+def fill_investment(data_series):
+    """
+    固定资产投资特殊处理函数，用于填充1978-1979年缺失的数据
+    参数：
+        data_series: 待处理的固定资产投资数据序列
+    返回：
+        处理后的数据序列，包含填充后的1978-1979年数据
+    """
+    # 已知1980年数据为910.9亿元，1978-1979年缺失，需要填充
+    invest_1980 = data_series.loc[1980]  # 获取1980年的数据
+    
+    # 基于GDP增长率的反向推算（1978-1980年均增长7.6%）
+    # 计算1978年和1979年的估计值
+    data_series.loc[1978] = invest_1980 / (1.076 ** 2)  # 1978年
+    data_series.loc[1979] = invest_1980 / 1.076        # 1979年
+    
+    # 创建完整时间序列并插值（使用线性插值）
+    # 确保时间序列的完整性，从1978年到2023年
+    full_index = pd.Series(index=range(1978, 2024), name=data_series.name)
+    combined = data_series.combine_first(full_index)  # 合并原始数据和完整索引
+    return combined.interpolate(method="linear")  # 使用线性插值填充缺失值
+
+def predict_unemployment(main_df):
+    """
+    青年失业率预测函数，基于经济指标的多元线性回归模型
+    参数：
+        main_df: 包含所有数据的主数据集
+    返回：
+        填充青年失业率后的主数据集
+    """
+    # 准备特征数据（所有中国的宏观经济指标）
+    # 选择与青年失业率可能相关的经济指标作为特征
+    features = main_df[[
+        "China_Real_GDP_Billion_Yuan", "China_Fixed_Asset_Investment_Billion_Yuan",
+        "China_Population_Billion", "China_Final_Consumption_Billion_Yuan", "China_Capital_Formation_Billion_Yuan"
+    ]].copy()
+    
+    # 填充特征缺失值（使用前向填充和后向填充）
+    # 确保特征数据中没有缺失值，以便进行模型训练
+    features = features.ffill().bfill()
+    
+    # 划分训练集（1991-2023）和预测集（1978-1990）
+    # 使用较近年份的数据作为训练集，预测较早年份的失业率
+    train_mask = (features.index >= 1991) & (features.index <= 2023)
+    predict_mask = (features.index >= 1978) & (features.index <= 1990)
+    
+    # 检查目标变量的分布
+    # 目标变量是青年失业率，仅在训练集中有实际值
+    target = main_df.loc[train_mask, "China_Youth_Unemployment_Rate"]
+    
+    # 训练多元线性回归模型
+    model = LinearRegression()
+    model.fit(features[train_mask], target)  # 使用训练集数据训练模型
+    
+    # 生成预测结果
+    predictions = model.predict(features[predict_mask])  # 预测1978-1990年的失业率
+    
+    # 将预测结果填充到主数据集中
+    main_df.loc[predict_mask, "China_Youth_Unemployment_Rate"] = predictions
+    
+    return main_df
+
+# 新增函数：自动调整Excel列宽并设置内容居中
+def auto_adjust_columns(worksheet):
+    """
+    自动调整Excel工作表的列宽，使内容完整显示，并设置所有单元格内容居中
+    参数：
+        worksheet: openpyxl工作表对象
+    """
+    # 调整列宽
+    for column_cells in worksheet.columns:
+        max_length = 0
+        column = column_cells[0].column_letter  # 获取列字母
+        # 遍历列中的每个单元格，包括标题行，找到最大内容长度
+        for cell in column_cells:
+            try:
+                if len(str(cell.value)) > max_length:
+                    max_length = len(str(cell.value))
+            except:
+                pass
+        # 设置列宽为最大内容长度加2个字符宽度作为缓冲
+        adjusted_width = max_length + 2
+        worksheet.column_dimensions[column].width = adjusted_width
+    
+    # 设置所有单元格内容居中
+    for row in worksheet.iter_rows():
+        for cell in row:
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+
+# ====================== 主处理流程 ======================
+if __name__ == "__main__":
+    # 加载汇率数据，用于将美国数据从美元转换为人民币
+    exchange = load_data("中国官方汇率美元兑本币年平均值.xlsx", skipfooter=1)
+    exchange.columns = ["Exchange_Rate"]  # 设置汇率列名
+    
+    # 初始化主数据集，覆盖1978-2023年
+    # 创建一个以年份为索引的空DataFrame，用于整合所有数据
+    main_df = pd.DataFrame(index=range(1978, 2024))
+    main_df.index.name = "Year"
+    
+    # 处理每个文件，根据配置加载数据并进行转换
+    for file, config in FILES_CONFIG.items():
+        df = load_data(file)  # 加载单个文件的数据
+        
+        # 处理美国数据：需要汇率转换
+        if "US" in config["target_col"]:
+            df = df.join(exchange, how="left")  # 合并汇率数据
+            # 应用转换函数，将美元值转换为人民币值
+            converted_values = config["conversion"](df["Value"], df["Exchange_Rate"])
+            main_df[config["target_col"]] = converted_values
+        # 处理中国数据：直接赋值或转换
+        else:
+            if "conversion" in config:
+                # 如果有转换函数，则应用转换
+                main_df[config["target_col"]] = config["conversion"](df["Value"])
+            else:
+                # 直接赋值
+                main_df[config["target_col"]] = df["Value"]
+    
+    # ====================== 高级数据处理 ======================
+    # 固定资产投资：精确处理1978-1979年缺失数据
+    main_df["China_Fixed_Asset_Investment_Billion_Yuan"] = fill_investment(main_df["China_Fixed_Asset_Investment_Billion_Yuan"])
+    
+    # 青年失业率：多元线性回归预测
+    main_df = predict_unemployment(main_df)
+    
+    # ====================== 最终整理 ======================
+    # 重置索引并调整列顺序，使数据集更整洁
+    main_df = main_df.reset_index()
+    # 按照逻辑顺序排列列，使数据更易于理解和使用
+    column_order = [
+        "Year", 
+        "US_Real_GDP_Billion_Yuan", "US_Consumption_Expenditure_Billion_Yuan",
+        "China_Real_GDP_Billion_Yuan", "China_Youth_Unemployment_Rate",
+        "China_Fixed_Asset_Investment_Billion_Yuan", "China_Population_Billion",
+        "China_Final_Consumption_Billion_Yuan", "China_Capital_Formation_Billion_Yuan"
+    ]
+    main_df = main_df[column_order]
+    
+    # 根据美国GDP价格指数将实际GDP基期从1929年换算为1978年
+    # 这一步是为了调整GDP的基期，使其更具可比性
+    main_df["US_Real_GDP_Billion_Yuan"] = main_df["US_Real_GDP_Billion_Yuan"] * 33.34 / 8.75
+    
+    # 保存文件，将处理后的数据保存为CSV和Excel文件
+    main_df.to_csv("Macro_Data.csv", index=False, encoding="utf-8-sig")
+    
+    # 保存Excel文件并调整列宽
+    main_df.to_excel("Macro_Data.xlsx", index=False, engine='openpyxl')
+    
+    # 加载刚保存的Excel文件
+    workbook = load_workbook("Macro_Data.xlsx")
+    worksheet = workbook.active  # 获取活动工作表
+    
+    # 调用自动调整列宽并设置居中函数
+    auto_adjust_columns(worksheet)
+    
+    # 保存修改后的Excel文件
+    workbook.save("Macro_Data.xlsx")
