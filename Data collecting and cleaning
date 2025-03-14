@@ -17,23 +17,23 @@ from openpyxl.styles import Alignment
 FILES_CONFIG = {
     # 美国数据需要汇率转换，因为原始数据为美元单位，需转换为人民币单位
     "美国GDP不变价支出法.xlsx": {
-        "target_col": "US_Real_GDP_Billion_Yuan",  # 目标列名
+        "target_col": "US_Real_GDP_Hundred_Million_Yuan",  # 目标列名
         "conversion": lambda val, rate: val * 10 * rate  # 十亿美元转换为亿元人民币的转换函数
     },
     "美国个人支出消费支出.xlsx": {
-        "target_col": "US_Consumption_Expenditure_Billion_Yuan",
+        "target_col": "US_Consumption_Expenditure_Hundred_Million_Yuan",
         "conversion": lambda val, rate: val * 10 * rate
     },
     # 中国数据，部分数据需要转换，部分直接使用
-    "GDP不变价.xlsx": {"target_col": "China_Real_GDP_Billion_Yuan"},
+    "GDP不变价.xlsx": {"target_col": "China_Real_GDP_Hundred_Million_Yuan"},
     "中国失业率青年人国际劳工估算.xlsx": {"target_col": "China_Youth_Unemployment_Rate"},
-    "全社会固定资产投资总额.xlsx": {"target_col": "China_Fixed_Asset_Investment_Billion_Yuan"},
+    "全社会固定资产投资总额.xlsx": {"target_col": "China_Fixed_Asset_Investment_Hundred_Million_Yuan"},
     "年末总人口数.xlsx": {
         "target_col": "China_Population_Billion",
         "conversion": lambda x: x / 10000  # 万人转换为亿人的转换函数
     },
-    "GDP支出法最终消费.xlsx": {"target_col": "China_Final_Consumption_Billion_Yuan"},
-    "GDP支出法资本形成总额.xlsx": {"target_col": "China_Capital_Formation_Billion_Yuan"}
+    "GDP支出法最终消费.xlsx": {"target_col": "China_Final_Consumption_Hundred_Million_Yuan"},
+    "GDP支出法资本形成总额.xlsx": {"target_col": "China_Capital_Formation_Hundred_Million_Yuan"}
 }
 
 # ====================== 数据加载函数 ======================
@@ -102,8 +102,8 @@ def predict_unemployment(main_df):
     # 准备特征数据（所有中国的宏观经济指标）
     # 选择与青年失业率可能相关的经济指标作为特征
     features = main_df[[
-        "China_Real_GDP_Billion_Yuan", "China_Fixed_Asset_Investment_Billion_Yuan",
-        "China_Population_Billion", "China_Final_Consumption_Billion_Yuan", "China_Capital_Formation_Billion_Yuan"
+        "China_Real_GDP_Hundred_Million_Yuan", "China_Fixed_Asset_Investment_Hundred_Million_Yuan",
+        "China_Population_Billion", "China_Final_Consumption_Hundred_Million_Yuan", "China_Capital_Formation_Hundred_Million_Yuan"
     ]].copy()
     
     # 填充特征缺失值（使用前向填充和后向填充）
@@ -190,7 +190,7 @@ if __name__ == "__main__":
     
     # ====================== 高级数据处理 ======================
     # 固定资产投资：精确处理1978-1979年缺失数据
-    main_df["China_Fixed_Asset_Investment_Billion_Yuan"] = fill_investment(main_df["China_Fixed_Asset_Investment_Billion_Yuan"])
+    main_df["China_Fixed_Asset_Investment_Hundred_Million_Yuan"] = fill_investment(main_df["China_Fixed_Asset_Investment_Hundred_Million_Yuan"])
     
     # 青年失业率：多元线性回归预测
     main_df = predict_unemployment(main_df)
@@ -201,16 +201,16 @@ if __name__ == "__main__":
     # 按照逻辑顺序排列列，使数据更易于理解和使用
     column_order = [
         "Year", 
-        "US_Real_GDP_Billion_Yuan", "US_Consumption_Expenditure_Billion_Yuan",
-        "China_Real_GDP_Billion_Yuan", "China_Youth_Unemployment_Rate",
-        "China_Fixed_Asset_Investment_Billion_Yuan", "China_Population_Billion",
-        "China_Final_Consumption_Billion_Yuan", "China_Capital_Formation_Billion_Yuan"
+        "US_Real_GDP_Hundred_Million_Yuan", "US_Consumption_Expenditure_Hundred_Million_Yuan",
+        "China_Real_GDP_Hundred_Million_Yuan", "China_Youth_Unemployment_Rate",
+        "China_Fixed_Asset_Investment_Hundred_Million_Yuan", "China_Population_Billion",
+        "China_Final_Consumption_Hundred_Million_Yuan", "China_Capital_Formation_Hundred_Million_Yuan"
     ]
     main_df = main_df[column_order]
     
     # 根据美国GDP价格指数将实际GDP基期从1929年换算为1978年
     # 这一步是为了调整GDP的基期，使其更具可比性
-    main_df["US_Real_GDP_Billion_Yuan"] = main_df["US_Real_GDP_Billion_Yuan"] * 33.34 / 8.75
+    main_df["US_Real_GDP_Hundred_Million_Yuan"] = main_df["US_Real_GDP_Hundred_Million_Yuan"] * 33.34 / 8.75
     
     # 保存文件，将处理后的数据保存为CSV和Excel文件
     main_df.to_csv("Macro_Data.csv", index=False, encoding="utf-8-sig")
